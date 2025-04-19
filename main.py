@@ -4,11 +4,11 @@ import html
 import os
 import uuid
 import tempfile
-from flask import Flask, request, render_template_string, session
+from flask import Flask, request, render_template_string
 from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
-app.secret_key = os.urandom(24)  # 为session添加密钥
+app.secret_key = os.urandom(24)
 
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -19,67 +19,18 @@ HTML_TEMPLATE = """
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
-        html, body { 
-            height: 100%; 
-            margin: 0; 
-            overflow-x: hidden;
-        }
-        body { 
-            padding: 10px 0; 
-        }
-        .container-fluid { 
-            width: 98%; 
-            padding: 0 10px;
-        }
-        .table-responsive { 
-            margin-top: 10px; 
-            width: 100%;
-            height: calc(100vh - 180px);
-            overflow-y: auto;
-        }
-        .table td, .table th {
-            text-align: center;
-            vertical-align: middle;
-        }
-        .id-column {
-            width: 60px;
-        }
-        .txt-column {
-            text-align: left;
-            word-wrap: break-word;
-            white-space: normal;
-            min-width: 300px;
-            max-width: 400px;
-        }
-        .token-column, .address-column {
-            min-width: 150px;
-            max-width: 200px;
-        }
-        .detail-column {
-            min-width: 180px;
-        }
-        .address-data { 
-            font-weight: bold; 
-            color: #198754; 
-            background-color: #e8f8f0; 
-            padding: 2px 5px; 
-            border-radius: 3px; 
-            display: block;
-            margin: 3px 0;
-        }
-        .token-data {
-            font-weight: bold;
-            color: #0d6efd;
-            background-color: #e7f1ff;
-            padding: 2px 5px;
-            border-radius: 3px;
-            display: block;
-            margin: 3px 0;
-        }
-        .detail-data {
-            display: block;
-            margin: 3px 0;
-        }
+        html, body { height: 100%; margin: 0; overflow-x: hidden; }
+        body { padding: 10px 0; }
+        .container-fluid { width: 98%; padding: 0 10px; }
+        .table-responsive { margin-top: 10px; width: 100%; height: calc(100vh - 180px); overflow-y: auto; }
+        .table td, .table th { text-align: center; vertical-align: middle; }
+        .id-column { width: 60px; }
+        .txt-column { text-align: left; word-wrap: break-word; white-space: normal; min-width: 300px; max-width: 400px; }
+        .token-column, .address-column { min-width: 150px; max-width: 200px; }
+        .detail-column { min-width: 180px; }
+        .address-data { font-weight: bold; color: #198754; background-color: #e8f8f0; padding: 2px 5px; border-radius: 3px; display: block; margin: 3px 0; }
+        .token-data { font-weight: bold; color: #0d6efd; background-color: #e7f1ff; padding: 2px 5px; border-radius: 3px; display: block; margin: 3px 0; }
+        .detail-data { display: block; margin: 3px 0; }
     </style>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
 </head>
@@ -96,8 +47,8 @@ HTML_TEMPLATE = """
                     <div class="card-body">
                         <form method="post" enctype="multipart/form-data" class="row g-3">
                             <div class="col-md-9">
-                                <input type="file" name="file" accept=".csv,.tsv,.txt,.xlsx,.xls" class="form-control">
-                                <div class="form-text">支持CSV、TSV、TXT或Excel文件格式</div>
+                                <input type="file" name="file" accept=".xlsx" class="form-control">
+                                <div class="form-text">支持Excel文件格式(.xlsx)</div>
                             </div>
                             <div class="col-md-3">
                                 <button type="submit" class="btn btn-primary w-100">分析数据</button>
@@ -131,26 +82,6 @@ HTML_TEMPLATE = """
 # 创建临时文件目录
 TEMP_FOLDER = tempfile.gettempdir()
 os.makedirs(TEMP_FOLDER, exist_ok=True)
-
-
-# 定期清理临时文件的函数
-def cleanup_temp_files():
-    """清理超过1小时的临时文件"""
-    import time
-
-    current_time = time.time()
-    for filename in os.listdir(TEMP_FOLDER):
-        if filename.startswith("upload_"):
-            file_path = os.path.join(TEMP_FOLDER, filename)
-            # 如果文件超过1小时未被访问，则删除
-            if (
-                os.path.exists(file_path)
-                and current_time - os.path.getatime(file_path) > 3600
-            ):
-                try:
-                    os.remove(file_path)
-                except:
-                    pass
 
 
 def parse_json_data(json_str):
@@ -192,59 +123,37 @@ def extract_tokens_and_addresses(json_data):
 
 @app.route("/", methods=["GET", "POST"])
 def index():
-    # 每次请求都尝试清理过期的临时文件
-    cleanup_temp_files()
-
     if request.method == "POST":
         # 检查是否有文件上传
         if "file" not in request.files or request.files["file"].filename == "":
             return render_template_string(HTML_TEMPLATE, error="没有选择文件")
 
         file = request.files["file"]
-        original_filename = secure_filename(file.filename)
-        file_ext = original_filename.split(".")[-1].lower()
+        filename = secure_filename(file.filename)
 
-        # 生成唯一的文件名，避免冲突
-        unique_filename = f"upload_{uuid.uuid4().hex}.{file_ext}"
-        file_path = os.path.join(TEMP_FOLDER, unique_filename)
+        # 检查文件扩展名
+        if not filename.lower().endswith(".xlsx"):
+            return render_template_string(
+                HTML_TEMPLATE, error="请上传.xlsx格式的Excel文件"
+            )
+
+        # 生成唯一的文件名
+        temp_file = os.path.join(TEMP_FOLDER, f"upload_{uuid.uuid4().hex}.xlsx")
 
         try:
             # 保存上传的文件
-            file.save(file_path)
+            file.save(temp_file)
 
-            # 根据文件扩展名读取数据
-            if file_ext == "csv":
-                with open(file_path, "r", encoding="utf-8") as f:
-                    sample = f.readline()
-                sep = "\t" if "\t" in sample else ","
-                df = pd.read_csv(
-                    file_path, sep=sep, encoding="utf-8", on_bad_lines="skip"
-                )
-            elif file_ext in ["tsv", "txt"]:
-                df = pd.read_csv(
-                    file_path, sep="\t", encoding="utf-8", on_bad_lines="skip"
-                )
-            elif file_ext in ["xlsx", "xls"]:
-                df = pd.read_excel(file_path, engine="openpyxl")
-            else:
-                # 删除不受支持的文件
-                if os.path.exists(file_path):
-                    os.remove(file_path)
-                return render_template_string(
-                    HTML_TEMPLATE,
-                    error="不支持的文件格式。请上传 CSV, TSV 或 Excel 文件。",
-                )
+            # 读取Excel文件
+            df = pd.read_excel(temp_file, engine="openpyxl")
 
-            # 处理列名，确保它们是标准的
+            # 处理列名
             df.columns = [col.strip().lower() for col in df.columns]
 
             # 检查必要的列是否存在
             required_columns = ["ts", "tid", "txt", "ret"]
             missing_columns = [col for col in required_columns if col not in df.columns]
             if missing_columns:
-                # 删除不符合要求的文件
-                if os.path.exists(file_path):
-                    os.remove(file_path)
                 return render_template_string(
                     HTML_TEMPLATE,
                     error=f"数据缺少必要的列：{', '.join(missing_columns)}",
@@ -275,27 +184,20 @@ def index():
                 | (token_df["提取的地址"].apply(len) > 0)
             ]
 
-            # 清理已处理的文件
-            if os.path.exists(file_path):
-                os.remove(file_path)
-
             if len(valid_token_df) == 0:
                 return render_template_string(
                     HTML_TEMPLATE, error="没有找到有效的Token或地址数据"
                 )
 
-            # 列样式定义
-            token_data_columns = {
+            # 生成HTML表格
+            token_data_html = '<table class="table table-striped table-hover" border="0">\n<thead>\n<tr>\n'
+            for col, col_class in {
                 "序号": "id-column",
                 "推文内容": "txt-column",
                 "提取的Token": "token-column",
                 "提取的地址": "address-column",
                 "详细": "detail-column",
-            }
-
-            # 生成HTML表格
-            token_data_html = '<table class="table table-striped table-hover" border="0">\n<thead>\n<tr>\n'
-            for col, col_class in token_data_columns.items():
+            }.items():
                 token_data_html += f'<th class="{col_class}">{col}</th>\n'
             token_data_html += "</tr>\n</thead>\n<tbody>\n"
 
@@ -306,42 +208,34 @@ def index():
                 # 序号列
                 token_data_html += f'<td class="id-column">{idx}</td>\n'
 
-                # 推文内容列 - 全部展示，自动换行
+                # 推文内容列
                 token_data_html += (
                     f'<td class="txt-column">{html.escape(str(row["推文内容"]))}</td>\n'
                 )
 
-                # 提取的Token列 - 垂直展示
+                # 提取的Token列
                 tokens = row["提取的Token"]
+                token_html = ""
                 if tokens:
-                    token_html = ""
-                    for token in tokens:
-                        token_html += f'<span class="token-data">{html.escape(str(token))}</span>\n'
-                    token_data_html += f'<td class="token-column">{token_html}</td>\n'
-                else:
-                    token_data_html += '<td class="token-column"></td>\n'
-
-                # 提取的地址列 - 垂直展示
-                addresses = row["提取的地址"]
-                if addresses:
-                    address_html = ""
-                    for addr in addresses:
-                        address_html += f'<span class="address-data">{html.escape(str(addr))}</span>\n'
-                    token_data_html += (
-                        f'<td class="address-column">{address_html}</td>\n'
+                    token_html = "".join(
+                        f'<span class="token-data">{html.escape(str(token))}</span>\n'
+                        for token in tokens
                     )
-                else:
-                    token_data_html += '<td class="address-column"></td>\n'
+                token_data_html += f'<td class="token-column">{token_html}</td>\n'
 
-                # 详细列 - 展示TID和时间
-                tid = row["TID"]
-                ts = row["时间"]
-                detail_html = (
-                    f'<span class="detail-data">TID: {html.escape(str(tid))}</span>\n'
-                )
-                detail_html += (
-                    f'<span class="detail-data">时间: {html.escape(str(ts))}</span>\n'
-                )
+                # 提取的地址列
+                addresses = row["提取的地址"]
+                address_html = ""
+                if addresses:
+                    address_html = "".join(
+                        f'<span class="address-data">{html.escape(str(addr))}</span>\n'
+                        for addr in addresses
+                    )
+                token_data_html += f'<td class="address-column">{address_html}</td>\n'
+
+                # 详细列
+                detail_html = f'<span class="detail-data">TID: {html.escape(str(row["TID"]))}</span>\n'
+                detail_html += f'<span class="detail-data">时间: {html.escape(str(row["时间"]))}</span>\n'
                 token_data_html += f'<td class="detail-column">{detail_html}</td>\n'
 
                 token_data_html += "</tr>\n"
@@ -355,36 +249,17 @@ def index():
             )
 
         except Exception as e:
-            # 发生错误时确保清理临时文件
-            if os.path.exists(file_path):
-                os.remove(file_path)
             return render_template_string(
                 HTML_TEMPLATE, error=f"处理数据时出错: {str(e)}"
             )
+        finally:
+            # 清理临时文件
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
 
     # GET请求时显示上传表单
     return render_template_string(HTML_TEMPLATE)
 
-
-# 添加定时任务，定期清理临时文件
-# 为兼容新版Flask，使用with app.app_context()替代before_first_request
-def setup_cleanup():
-    import threading
-    import time
-
-    def cleanup_thread():
-        with app.app_context():
-            while True:
-                cleanup_temp_files()
-                time.sleep(3600)  # 每小时清理一次
-
-    # 启动清理线程
-    thread = threading.Thread(target=cleanup_thread, daemon=True)
-    thread.start()
-
-
-# 在应用启动时调用
-setup_cleanup()
 
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=23333)

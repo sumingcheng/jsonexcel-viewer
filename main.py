@@ -1,9 +1,14 @@
 import pandas as pd
 import json
 import html
-from flask import Flask, request, render_template_string
+import os
+import uuid
+import tempfile
+from flask import Flask, request, render_template_string, session
+from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
+app.secret_key = os.urandom(24)  # 为session添加密钥
 
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -123,6 +128,30 @@ HTML_TEMPLATE = """
 </html>
 """
 
+# 创建临时文件目录
+TEMP_FOLDER = tempfile.gettempdir()
+os.makedirs(TEMP_FOLDER, exist_ok=True)
+
+
+# 定期清理临时文件的函数
+def cleanup_temp_files():
+    """清理超过1小时的临时文件"""
+    import time
+
+    current_time = time.time()
+    for filename in os.listdir(TEMP_FOLDER):
+        if filename.startswith("upload_"):
+            file_path = os.path.join(TEMP_FOLDER, filename)
+            # 如果文件超过1小时未被访问，则删除
+            if (
+                os.path.exists(file_path)
+                and current_time - os.path.getatime(file_path) > 3600
+            ):
+                try:
+                    os.remove(file_path)
+                except:
+                    pass
+
 
 def parse_json_data(json_str):
     """尝试解析 JSON 字符串，如果失败则返回空字典"""
@@ -163,19 +192,26 @@ def extract_tokens_and_addresses(json_data):
 
 @app.route("/", methods=["GET", "POST"])
 def index():
+    # 每次请求都尝试清理过期的临时文件
+    cleanup_temp_files()
+
     if request.method == "POST":
         # 检查是否有文件上传
         if "file" not in request.files or request.files["file"].filename == "":
             return render_template_string(HTML_TEMPLATE, error="没有选择文件")
 
         file = request.files["file"]
-        file_ext = file.filename.split(".")[-1].lower()
+        original_filename = secure_filename(file.filename)
+        file_ext = original_filename.split(".")[-1].lower()
 
-        # 保存上传的文件
-        file_path = f"temp_upload.{file_ext}"
-        file.save(file_path)
+        # 生成唯一的文件名，避免冲突
+        unique_filename = f"upload_{uuid.uuid4().hex}.{file_ext}"
+        file_path = os.path.join(TEMP_FOLDER, unique_filename)
 
         try:
+            # 保存上传的文件
+            file.save(file_path)
+
             # 根据文件扩展名读取数据
             if file_ext == "csv":
                 with open(file_path, "r", encoding="utf-8") as f:
@@ -191,6 +227,9 @@ def index():
             elif file_ext in ["xlsx", "xls"]:
                 df = pd.read_excel(file_path, engine="openpyxl")
             else:
+                # 删除不受支持的文件
+                if os.path.exists(file_path):
+                    os.remove(file_path)
                 return render_template_string(
                     HTML_TEMPLATE,
                     error="不支持的文件格式。请上传 CSV, TSV 或 Excel 文件。",
@@ -203,6 +242,9 @@ def index():
             required_columns = ["ts", "tid", "txt", "ret"]
             missing_columns = [col for col in required_columns if col not in df.columns]
             if missing_columns:
+                # 删除不符合要求的文件
+                if os.path.exists(file_path):
+                    os.remove(file_path)
                 return render_template_string(
                     HTML_TEMPLATE,
                     error=f"数据缺少必要的列：{', '.join(missing_columns)}",
@@ -232,6 +274,10 @@ def index():
                 (token_df["提取的Token"].apply(len) > 0)
                 | (token_df["提取的地址"].apply(len) > 0)
             ]
+
+            # 清理已处理的文件
+            if os.path.exists(file_path):
+                os.remove(file_path)
 
             if len(valid_token_df) == 0:
                 return render_template_string(
@@ -270,9 +316,7 @@ def index():
                 if tokens:
                     token_html = ""
                     for token in tokens:
-                        token_html += (
-                            f'<span class="token-data">{html.escape(token)}</span>\n'
-                        )
+                        token_html += f'<span class="token-data">{html.escape(str(token))}</span>\n'
                     token_data_html += f'<td class="token-column">{token_html}</td>\n'
                 else:
                     token_data_html += '<td class="token-column"></td>\n'
@@ -282,9 +326,7 @@ def index():
                 if addresses:
                     address_html = ""
                     for addr in addresses:
-                        address_html += (
-                            f'<span class="address-data">{html.escape(addr)}</span>\n'
-                        )
+                        address_html += f'<span class="address-data">{html.escape(str(addr))}</span>\n'
                     token_data_html += (
                         f'<td class="address-column">{address_html}</td>\n'
                     )
@@ -313,6 +355,9 @@ def index():
             )
 
         except Exception as e:
+            # 发生错误时确保清理临时文件
+            if os.path.exists(file_path):
+                os.remove(file_path)
             return render_template_string(
                 HTML_TEMPLATE, error=f"处理数据时出错: {str(e)}"
             )
@@ -320,6 +365,26 @@ def index():
     # GET请求时显示上传表单
     return render_template_string(HTML_TEMPLATE)
 
+
+# 添加定时任务，定期清理临时文件
+# 为兼容新版Flask，使用with app.app_context()替代before_first_request
+def setup_cleanup():
+    import threading
+    import time
+
+    def cleanup_thread():
+        with app.app_context():
+            while True:
+                cleanup_temp_files()
+                time.sleep(3600)  # 每小时清理一次
+
+    # 启动清理线程
+    thread = threading.Thread(target=cleanup_thread, daemon=True)
+    thread.start()
+
+
+# 在应用启动时调用
+setup_cleanup()
 
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=23333)

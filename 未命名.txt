@@ -1,2 +1,0 @@
-pip install gradio pandas openpyxl matplotlib numpy
-

@@ -1,414 +1,325 @@
-import gradio as gr
 import pandas as pd
 import json
-import os
-import numpy as np
-import matplotlib.pyplot as plt
-from collections import Counter
+import html
+from flask import Flask, request, render_template_string
+
+app = Flask(__name__)
+
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>分析工具</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        html, body { 
+            height: 100%; 
+            margin: 0; 
+            overflow-x: hidden;
+        }
+        body { 
+            padding: 10px 0; 
+        }
+        .container-fluid { 
+            width: 98%; 
+            padding: 0 10px;
+        }
+        .table-responsive { 
+            margin-top: 10px; 
+            width: 100%;
+            height: calc(100vh - 180px);
+            overflow-y: auto;
+        }
+        .table td, .table th {
+            text-align: center;
+            vertical-align: middle;
+        }
+        .id-column {
+            width: 60px;
+        }
+        .txt-column {
+            text-align: left;
+            word-wrap: break-word;
+            white-space: normal;
+            min-width: 300px;
+            max-width: 400px;
+        }
+        .token-column, .address-column {
+            min-width: 150px;
+            max-width: 200px;
+        }
+        .detail-column {
+            min-width: 180px;
+        }
+        .address-data { 
+            font-weight: bold; 
+            color: #198754; 
+            background-color: #e8f8f0; 
+            padding: 2px 5px; 
+            border-radius: 3px; 
+            display: block;
+            margin: 3px 0;
+        }
+        .token-data {
+            font-weight: bold;
+            color: #0d6efd;
+            background-color: #e7f1ff;
+            padding: 2px 5px;
+            border-radius: 3px;
+            display: block;
+            margin: 3px 0;
+        }
+        .detail-data {
+            display: block;
+            margin: 3px 0;
+        }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+</head>
+<body>
+    <div class="container-fluid">
+        <div class="row">
+            <div class="col-12">
+                <h1 class="display-5 mb-3">分析工具</h1>
+                
+                <div class="card mb-3">
+                    <div class="card-header bg-primary text-white">
+                        <h5 class="mb-0">上传数据文件</h5>
+                    </div>
+                    <div class="card-body">
+                        <form method="post" enctype="multipart/form-data" class="row g-3">
+                            <div class="col-md-9">
+                                <input type="file" name="file" accept=".csv,.tsv,.txt,.xlsx,.xls" class="form-control">
+                                <div class="form-text">支持CSV、TSV、TXT或Excel文件格式</div>
+                            </div>
+                            <div class="col-md-3">
+                                <button type="submit" class="btn btn-primary w-100">分析数据</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+                
+                {% if error %}
+                <div class="alert alert-danger">
+                    <strong>错误！</strong> {{ error }}
+                </div>
+                {% endif %}
+                
+                {% if token_data %}
+                <div class="alert alert-success mb-2">
+                    <strong>成功！</strong> 数据已成功加载并分析，共发现 <strong>{{ token_count }}</strong> 条Token信息。
+                </div>
+                
+                <div class="table-responsive">
+                    {{ token_data|safe }}
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</body>
+</html>
+"""
 
 
-def format_json(json_str):
-    """格式化JSON字符串以便更好地展示"""
+def parse_json_data(json_str):
+    """尝试解析 JSON 字符串，如果失败则返回空字典"""
+    if pd.isna(json_str) or not isinstance(json_str, str) or json_str.strip() == "":
+        return {}
     try:
-        # 尝试解析JSON字符串
-        parsed_json = json.loads(json_str)
-        # 返回格式化的JSON
-        return json.dumps(parsed_json, indent=2, ensure_ascii=False)
-    except Exception as e:
-        return f"JSON解析错误: {str(e)}\n原始内容: {json_str}"
+        return json.loads(json_str)
+    except:
+        return {}
 
 
-def extract_json_fields(json_str):
-    """从JSON字符串中提取字段并创建一个扁平的字典"""
-    try:
-        parsed = json.loads(json_str)
-        flattened = {}
+def extract_tokens_and_addresses(json_data):
+    """从JSON数据中提取verification_tokens中的symbol和token_address"""
+    tokens = []
+    addresses = []
 
-        def flatten_dict(obj, prefix=""):
-            if isinstance(obj, dict):
-                for k, v in obj.items():
-                    new_key = f"{prefix}.{k}" if prefix else k
-                    if isinstance(v, (dict, list)):
-                        flatten_dict(v, new_key)
-                    else:
-                        flattened[new_key] = v
-            elif isinstance(obj, list):
-                for i, item in enumerate(obj):
-                    new_key = f"{prefix}[{i}]"
-                    if isinstance(item, (dict, list)):
-                        flatten_dict(item, new_key)
-                    else:
-                        flattened[new_key] = item
+    if not json_data:
+        return tokens, addresses
 
-        flatten_dict(parsed)
-        return flattened
-    except Exception as e:
-        return {"error": str(e)}
+    # 只有当status为success且verified_tokens_found为true时才提取
+    if (
+        json_data.get("status") == "success"
+        and json_data.get("verified_tokens_found") == True
+    ):
+        # 提取verification_tokens中的数据
+        if "verification_tokens" in json_data and isinstance(
+            json_data["verification_tokens"], list
+        ):
+            for token in json_data["verification_tokens"]:
+                if isinstance(token, dict):
+                    if "symbol" in token:
+                        tokens.append(token["symbol"])
+                    if "token_address" in token:
+                        addresses.append(token["token_address"])
 
-
-def get_json_structure(json_str):
-    """获取JSON的结构（键和数据类型）"""
-    try:
-        parsed = json.loads(json_str)
-        structure = {}
-
-        def analyze_structure(obj, prefix=""):
-            if isinstance(obj, dict):
-                for k, v in obj.items():
-                    new_key = f"{prefix}.{k}" if prefix else k
-                    if isinstance(v, (dict, list)):
-                        analyze_structure(v, new_key)
-                    else:
-                        structure[new_key] = type(v).__name__
-            elif isinstance(obj, list) and len(obj) > 0:
-                # 只分析列表的第一个元素作为示例
-                sample = obj[0]
-                new_key = f"{prefix}[0]"
-                if isinstance(sample, (dict, list)):
-                    analyze_structure(sample, new_key)
-                else:
-                    structure[prefix] = f"list of {type(sample).__name__}"
-
-        analyze_structure(parsed)
-        return structure
-    except Exception as e:
-        return {"error": str(e)}
+    return tokens, addresses
 
 
-def process_excel(file):
-    """处理上传的Excel文件并返回处理后的数据"""
-    try:
-        # 读取Excel文件
-        df = pd.read_excel(file.name)
+@app.route("/", methods=["GET", "POST"])
+def index():
+    if request.method == "POST":
+        # 检查是否有文件上传
+        if "file" not in request.files or request.files["file"].filename == "":
+            return render_template_string(HTML_TEMPLATE, error="没有选择文件")
 
-        # 获取列名并找到最后一列
-        columns = df.columns.tolist()
-        last_column = columns[-1]
+        file = request.files["file"]
+        file_ext = file.filename.split(".")[-1].lower()
 
-        # 创建结果数据框
-        result_df = pd.DataFrame()
-        result_df['行号'] = range(1, len(df) + 1)
+        # 保存上传的文件
+        file_path = f"temp_upload.{file_ext}"
+        file.save(file_path)
 
-        # 添加所有原始列
-        for col in columns:
-            result_df[col] = df[col]
-
-        # 添加格式化后的JSON列
-        result_df['格式化JSON'] = df[last_column].apply(lambda x: format_json(str(x)) if pd.notna(x) else "")
-
-        # 预览数据
-        preview_text = f"文件包含 {len(df)} 行数据，共 {len(columns)} 列\n"
-        preview_text += f"最后一列名称: {last_column}\n"
-
-        # 返回结果
-        return result_df, preview_text, last_column
-    except Exception as e:
-        return None, f"处理文件时出错: {str(e)}", None
-
-
-def display_row_json(df, row_index, json_column_name):
-    """显示选定行的JSON数据"""
-    if df is None or df.empty or row_index < 0 or row_index >= len(df):
-        return "没有选择有效的行", {}, {}
-
-    # 获取该行的格式化JSON
-    formatted_json = df.iloc[row_index]['格式化JSON']
-
-    # 获取原始JSON字符串
-    json_str = str(df.iloc[row_index][json_column_name])
-
-    # 提取JSON字段和结构
-    fields = extract_json_fields(json_str)
-    structure = get_json_structure(json_str)
-
-    return formatted_json, fields, structure
-
-
-def analyze_json_dataset(df, json_column_name):
-    """分析整个数据集中的JSON数据"""
-    if df is None or df.empty:
-        return "没有有效的数据集", None
-
-    try:
-        # 收集所有出现的字段
-        all_fields = set()
-        field_types = {}
-        field_counts = Counter()
-        valid_json_count = 0
-        invalid_json_count = 0
-
-        # 分析每行的JSON
-        for i, row in df.iterrows():
-            json_str = str(row[json_column_name])
-            try:
-                parsed = json.loads(json_str)
-                valid_json_count += 1
-
-                # 提取字段
-                fields = extract_json_fields(json_str)
-                for field, value in fields.items():
-                    all_fields.add(field)
-                    field_counts[field] += 1
-
-                    # 记录字段类型
-                    field_type = type(value).__name__
-                    if field not in field_types:
-                        field_types[field] = set()
-                    field_types[field].add(field_type)
-
-            except:
-                invalid_json_count += 1
-
-        # 生成分析报告
-        report = f"JSON数据分析报告:\n"
-        report += f"- 有效JSON条目: {valid_json_count}\n"
-        report += f"- 无效JSON条目: {invalid_json_count}\n"
-        report += f"- 共发现字段数: {len(all_fields)}\n\n"
-
-        # 创建字段统计数据框
-        field_stats = []
-        for field in sorted(all_fields):
-            field_stats.append({
-                "字段名": field,
-                "出现次数": field_counts[field],
-                "出现比例": f"{field_counts[field] / valid_json_count * 100:.2f}%" if valid_json_count > 0 else "0%",
-                "数据类型": ", ".join(field_types.get(field, ["未知"]))
-            })
-
-        field_stats_df = pd.DataFrame(field_stats)
-
-        return report, field_stats_df
-    except Exception as e:
-        return f"分析过程中出错: {str(e)}", None
-
-
-def generate_field_distribution_chart(df, json_column_name, selected_fields):
-    """生成所选字段的分布图表"""
-    if df is None or df.empty or not selected_fields:
-        return None
-
-    try:
-        # 提取所有行的字段值
-        field_values = {field: [] for field in selected_fields}
-
-        for i, row in df.iterrows():
-            json_str = str(row[json_column_name])
-            try:
-                fields = extract_json_fields(json_str)
-                for field in selected_fields:
-                    if field in fields:
-                        value = fields[field]
-                        # 只记录数值和字符串类型
-                        if isinstance(value, (int, float)):
-                            field_values[field].append(value)
-                        elif isinstance(value, str):
-                            field_values[field].append(value)
-            except:
-                pass
-
-        # 创建临时文件名
-        chart_path = "temp_chart.png"
-
-        # 设置图表
-        fig, axes = plt.subplots(len(selected_fields), 1, figsize=(10, 4 * len(selected_fields)))
-        if len(selected_fields) == 1:
-            axes = [axes]  # 确保axes始终是列表
-
-        for i, field in enumerate(selected_fields):
-            values = field_values[field]
-            if not values:
-                axes[i].text(0.5, 0.5, f"没有 {field} 的数据", ha='center', va='center')
-                continue
-
-            if all(isinstance(x, (int, float)) for x in values):
-                # 数值型数据用直方图
-                axes[i].hist(values, bins=20, alpha=0.7)
-                axes[i].set_title(f"{field} 分布")
-                axes[i].set_xlabel("值")
-                axes[i].set_ylabel("频次")
-            elif all(isinstance(x, str) for x in values):
-                # 字符串数据用条形图，显示前10个最常见的值
-                value_counts = Counter(values).most_common(10)
-                labels, counts = zip(*value_counts) if value_counts else ([], [])
-                axes[i].barh(range(len(labels)), counts, alpha=0.7)
-                axes[i].set_yticks(range(len(labels)))
-                axes[i].set_yticklabels([str(l)[:20] for l in labels])  # 限制标签长度
-                axes[i].set_title(f"{field} 前10个最常见值")
-                axes[i].set_xlabel("频次")
+        try:
+            # 根据文件扩展名读取数据
+            if file_ext == "csv":
+                with open(file_path, "r", encoding="utf-8") as f:
+                    sample = f.readline()
+                sep = "\t" if "\t" in sample else ","
+                df = pd.read_csv(
+                    file_path, sep=sep, encoding="utf-8", on_bad_lines="skip"
+                )
+            elif file_ext in ["tsv", "txt"]:
+                df = pd.read_csv(
+                    file_path, sep="\t", encoding="utf-8", on_bad_lines="skip"
+                )
+            elif file_ext in ["xlsx", "xls"]:
+                df = pd.read_excel(file_path, engine="openpyxl")
             else:
-                axes[i].text(0.5, 0.5, f"{field} 包含混合数据类型", ha='center', va='center')
+                return render_template_string(
+                    HTML_TEMPLATE,
+                    error="不支持的文件格式。请上传 CSV, TSV 或 Excel 文件。",
+                )
 
-        plt.tight_layout()
-        plt.savefig(chart_path)
-        plt.close()
+            # 处理列名，确保它们是标准的
+            df.columns = [col.strip().lower() for col in df.columns]
 
-        return chart_path
-    except Exception as e:
-        print(f"生成图表出错: {str(e)}")
-        return None
+            # 检查必要的列是否存在
+            required_columns = ["ts", "tid", "txt", "ret"]
+            missing_columns = [col for col in required_columns if col not in df.columns]
+            if missing_columns:
+                return render_template_string(
+                    HTML_TEMPLATE,
+                    error=f"数据缺少必要的列：{', '.join(missing_columns)}",
+                )
 
+            # 解析 ret 列中的 JSON 数据并提取tokens和addresses
+            df["ret_json"] = df["ret"].apply(parse_json_data)
+            tokens_and_addresses = df["ret_json"].apply(extract_tokens_and_addresses)
 
-# 创建全局变量
-processed_df = None
-json_column = None
+            # 创建Token展示DataFrame
+            token_df = pd.DataFrame(
+                {
+                    "时间": df["ts"],
+                    "推文内容": df["txt"],
+                    "提取的Token": tokens_and_addresses.apply(
+                        lambda x: x[0] if x[0] else []
+                    ),
+                    "提取的地址": tokens_and_addresses.apply(
+                        lambda x: x[1] if x[1] else []
+                    ),
+                    "TID": df["tid"],
+                }
+            )
 
+            # 仅保留有效数据（存在token或address的行）
+            valid_token_df = token_df[
+                (token_df["提取的Token"].apply(len) > 0)
+                | (token_df["提取的地址"].apply(len) > 0)
+            ]
 
-def upload_and_process(file):
-    """上传并处理文件"""
-    global processed_df, json_column
-    if file is None:
-        return (None, "请上传Excel文件",
-                gr.update(visible=False),
-                gr.update(visible=False),
-                gr.update(visible=False),
-                gr.update(visible=False),
-                gr.update(visible=False))
+            if len(valid_token_df) == 0:
+                return render_template_string(
+                    HTML_TEMPLATE, error="没有找到有效的Token或地址数据"
+                )
 
-    df, preview, last_column = process_excel(file)
-    processed_df = df
-    json_column = last_column
+            # 列样式定义
+            token_data_columns = {
+                "序号": "id-column",
+                "推文内容": "txt-column",
+                "提取的Token": "token-column",
+                "提取的地址": "address-column",
+                "详细": "detail-column",
+            }
 
-    # 计算最大行号用于滑块
-    max_row = len(df) - 1 if df is not None and not df.empty else 0
+            # 生成HTML表格
+            token_data_html = '<table class="table table-striped table-hover" border="0">\n<thead>\n<tr>\n'
+            for col, col_class in token_data_columns.items():
+                token_data_html += f'<th class="{col_class}">{col}</th>\n'
+            token_data_html += "</tr>\n</thead>\n<tbody>\n"
 
-    # 如果处理成功，显示数据框和滑块
-    dataframe_visible = df is not None and not df.empty
+            # 添加数据行
+            for idx, (_, row) in enumerate(valid_token_df.iterrows(), 1):
+                token_data_html += "<tr>\n"
 
-    # 进行数据集分析
-    analysis_report, field_stats = analyze_json_dataset(df, last_column) if dataframe_visible else ("", None)
+                # 序号列
+                token_data_html += f'<td class="id-column">{idx}</td>\n'
 
-    # 返回预览信息和可见性设置
-    return (preview, "",
-            gr.update(value=df if dataframe_visible else None, visible=dataframe_visible),
-            gr.update(value=analysis_report, visible=dataframe_visible),
-            gr.update(value=field_stats if dataframe_visible else None, visible=dataframe_visible),
-            gr.update(minimum=0, maximum=max_row, step=1, value=0, visible=dataframe_visible),
-            gr.update(visible=dataframe_visible))
+                # 推文内容列 - 全部展示，自动换行
+                token_data_html += (
+                    f'<td class="txt-column">{html.escape(str(row["推文内容"]))}</td>\n'
+                )
 
+                # 提取的Token列 - 垂直展示
+                tokens = row["提取的Token"]
+                if tokens:
+                    token_html = ""
+                    for token in tokens:
+                        token_html += (
+                            f'<span class="token-data">{html.escape(token)}</span>\n'
+                        )
+                    token_data_html += f'<td class="token-column">{token_html}</td>\n'
+                else:
+                    token_data_html += '<td class="token-column"></td>\n'
 
-def update_json_display(row_index):
-    """更新JSON显示"""
-    global processed_df, json_column
-    if processed_df is None or json_column is None:
-        return "", None, None
-
-    formatted_json, fields, structure = display_row_json(processed_df, row_index, json_column)
-
-    # 将字段转换为数据框格式
-    fields_df = pd.DataFrame(list(fields.items()), columns=['字段', '值']) if fields else None
-    structure_df = pd.DataFrame(list(structure.items()), columns=['字段', '数据类型']) if structure else None
-
-    return formatted_json, fields_df, structure_df
-
-
-def create_chart(selected_fields):
-    """创建所选字段的图表"""
-    global processed_df, json_column
-    if processed_df is None or json_column is None:
-        return None
-
-    chart_path = generate_field_distribution_chart(processed_df, json_column, selected_fields)
-    return chart_path
-
-
-def create_interface():
-    """创建Gradio界面"""
-    with gr.Blocks(title="Excel JSON 可视化工具") as app:
-        gr.Markdown("# Excel JSON 可视化工具")
-        gr.Markdown("上传Excel文件，查看并可视化最后一列的JSON数据")
-
-        with gr.Row():
-            file_input = gr.File(label="上传Excel文件")
-
-        with gr.Row():
-            process_btn = gr.Button("处理文件", variant="primary")
-
-        with gr.Row():
-            preview_output = gr.Textbox(label="文件预览", lines=3)
-            error_output = gr.Textbox(label="错误信息", lines=3)
-
-        with gr.Row():
-            row_slider = gr.Slider(minimum=0, maximum=0, step=1, label="选择行号", visible=False)
-
-        # 创建选项卡
-        with gr.Tabs() as tabs:
-            with gr.TabItem("数据表格"):
-                df_output = gr.Dataframe(label="Excel数据", visible=False)
-
-            with gr.TabItem("JSON视图"):
-                with gr.Row():
-                    json_display = gr.Textbox(label="JSON数据", lines=15, visible=False)
-
-            with gr.TabItem("字段提取"):
-                with gr.Row():
-                    fields_display = gr.Dataframe(label="提取的字段", visible=False)
-
-            with gr.TabItem("JSON结构"):
-                with gr.Row():
-                    structure_display = gr.Dataframe(label="JSON结构", visible=False)
-
-            with gr.TabItem("数据集分析"):
-                with gr.Row():
-                    analysis_report = gr.Textbox(label="分析报告", lines=6, visible=False)
-
-                with gr.Row():
-                    field_stats = gr.Dataframe(label="字段统计", visible=False)
-
-                with gr.Row():
-                    field_selector = gr.CheckboxGroup(
-                        label="选择要可视化的字段",
-                        choices=[],
-                        visible=False
+                # 提取的地址列 - 垂直展示
+                addresses = row["提取的地址"]
+                if addresses:
+                    address_html = ""
+                    for addr in addresses:
+                        address_html += (
+                            f'<span class="address-data">{html.escape(addr)}</span>\n'
+                        )
+                    token_data_html += (
+                        f'<td class="address-column">{address_html}</td>\n'
                     )
-                    generate_chart_btn = gr.Button("生成图表", visible=False)
+                else:
+                    token_data_html += '<td class="address-column"></td>\n'
 
-                with gr.Row():
-                    chart_output = gr.Image(label="字段分布图表", visible=False)
+                # 详细列 - 展示TID和时间
+                tid = row["TID"]
+                ts = row["时间"]
+                detail_html = (
+                    f'<span class="detail-data">TID: {html.escape(str(tid))}</span>\n'
+                )
+                detail_html += (
+                    f'<span class="detail-data">时间: {html.escape(str(ts))}</span>\n'
+                )
+                token_data_html += f'<td class="detail-column">{detail_html}</td>\n'
 
-        # 设置事件处理
-        process_btn.click(
-            fn=upload_and_process,
-            inputs=[file_input],
-            outputs=[preview_output, error_output, df_output, analysis_report, field_stats, row_slider, field_selector]
-        )
+                token_data_html += "</tr>\n"
 
-        row_slider.change(
-            fn=update_json_display,
-            inputs=[row_slider],
-            outputs=[json_display, fields_display, structure_display]
-        )
+            token_data_html += "</tbody>\n</table>"
 
-        def update_field_choices():
-            global processed_df, json_column
-            if processed_df is None or json_column is None:
-                return []
+            return render_template_string(
+                HTML_TEMPLATE,
+                token_data=token_data_html,
+                token_count=len(valid_token_df),
+            )
 
-            # 分析结果以获取字段名称
-            _, field_stats_df = analyze_json_dataset(processed_df, json_column)
-            if field_stats_df is not None:
-                field_choices = field_stats_df["字段名"].tolist()
-                # 只返回前10个字段作为选择
-                return gr.update(choices=field_choices[:10], visible=True), gr.update(visible=True), gr.update(
-                    visible=True)
-            return gr.update(visible=False), gr.update(visible=False), gr.update(visible=False)
+        except Exception as e:
+            return render_template_string(
+                HTML_TEMPLATE, error=f"处理数据时出错: {str(e)}"
+            )
 
-        # 当处理完文件后，更新字段选择器
-        process_btn.click(
-            fn=update_field_choices,
-            inputs=[],
-            outputs=[field_selector, generate_chart_btn, chart_output]
-        )
-
-        generate_chart_btn.click(
-            fn=create_chart,
-            inputs=[field_selector],
-            outputs=[chart_output]
-        )
-
-    return app
+    # GET请求时显示上传表单
+    return render_template_string(HTML_TEMPLATE)
 
 
-# 启动应用
 if __name__ == "__main__":
-    app = create_interface()
-    app.launch()
+    app.run(debug=True, host="0.0.0.0", port=23333)

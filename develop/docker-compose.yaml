@@ -6,3 +6,10 @@ services:
     ports:
       - '23333:23333'
     restart: unless-stopped
+    networks:
+      - analyzer_network
+
+networks:
+  analyzer_network:
+    name: analyzer_network
+    driver: bridge

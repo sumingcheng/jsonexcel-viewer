@@ -1,5 +1,5 @@
 VERSION=v0.1.0
-IMAGE_NAME=ai-tweet-token-analyzer
+IMAGE_NAME=jsonexcel-viewer
 
 .PHONY: build run clean up down
 build:

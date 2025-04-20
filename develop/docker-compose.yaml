@@ -1,8 +1,8 @@
 version: '3.8'
 
 services:
-  ai-tweet-token-analyzer:
-    image: ai-tweet-token-analyzer:v0.1.0
+  jsonexcel-viewer:
+    image: jsonexcel-viewer:v0.1.0
     ports:
       - '23333:23333'
     restart: unless-stopped

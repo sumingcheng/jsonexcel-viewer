@@ -8,6 +8,11 @@ services:
     restart: unless-stopped
     networks:
       - analyzer_network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
 
 networks:
   analyzer_network:

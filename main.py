@@ -125,19 +125,25 @@ def parse_json_data(json_str):
 
 
 def extract_tokens_and_addresses(row):
-    """提取Token和地址信息"""
+    """从JSON数据中提取Token和地址信息"""
     tokens = []
     addresses = []
+    success = True
 
     if "xh_model" not in row or pd.isna(row["xh_model"]):
-        return tokens, addresses
+        return tokens, addresses, success
 
     try:
         xh_data = parse_json_data(row["xh_model"])
         if not xh_data:
-            return tokens, addresses
+            return tokens, addresses, success
 
-        # 使用路径访问简化嵌套字典查询
+        # 检查是否success为false
+        if xh_data.get("success") is False:
+            success = False
+            return tokens, addresses, success
+
+        # 只从JSON数据中提取信息
         data = xh_data.get("data", {})
         record = data.get("record", {})
 
@@ -147,25 +153,16 @@ def extract_tokens_and_addresses(row):
             if token:
                 tokens.append(token)
 
-        # 从json数据中提取地址
+        # 提取addresses
         for addr_info in record.get("addresses", []):
             address = addr_info.get("address")
             if address:
                 addresses.append(address)
 
-        # 如果在JSON中没有找到地址，尝试从推文内容中识别
-        if not addresses and "txt" in row and not pd.isna(row["txt"]):
-            txt_content = str(row["txt"])
-            # 使用预编译的正则表达式
-            eth_addresses = ETH_ADDRESS_PATTERN.findall(txt_content)
-            btc_addresses = BTC_ADDRESS_PATTERN.findall(txt_content)
-            # 使用集合操作去重
-            addresses = list(set(eth_addresses + btc_addresses))
-
     except Exception as e:
         logger.error(f"提取Token和地址时出错: {str(e)}")
 
-    return tokens, addresses
+    return tokens, addresses, success
 
 
 @app.route("/", methods=["GET", "POST"])
@@ -213,32 +210,29 @@ def index():
             records_with_addresses = 0
 
             tokens_and_addresses = []
+            success_flags = []
+
             for _, row in df.iterrows():
                 try:
-                    # 检查xh_model字段中的success标记
-                    is_success = True
-                    if "xh_model" in row and not pd.isna(row["xh_model"]):
-                        xh_data = parse_json_data(row["xh_model"])
-                        # 检查JSON是否包含success:false
-                        if xh_data.get("success") is False:
-                            is_success = False
-                            failed_records += 1
-                            tokens_and_addresses.append(([], []))
-                            continue
-
-                    tokens, addresses = extract_tokens_and_addresses(row)
+                    tokens, addresses, success = extract_tokens_and_addresses(row)
                     tokens_and_addresses.append((tokens, addresses))
+                    success_flags.append(success)
 
-                    successful_records += 1
-                    if tokens:
-                        records_with_tokens += 1
-                    if addresses:
-                        records_with_addresses += 1
+                    if not success:
+                        failed_records += 1
+                    else:
+                        successful_records += 1
+                        if tokens:
+                            records_with_tokens += 1
+                        if addresses:
+                            records_with_addresses += 1
+
                 except Exception as e:
                     logger.error(
                         f"处理记录时出错, TID: {row.get('tid', 'unknown')}, 错误: {str(e)}"
                     )
                     tokens_and_addresses.append(([], []))
+                    success_flags.append(False)  # 修改为False，因为这是处理失败的情况
                     failed_records += 1
 
             # 生成统计数据
@@ -251,7 +245,7 @@ def index():
             }
 
             logger.info(
-                f"统计信息: 总记录数={stats['total_records']}, Token记录数={stats['records_with_tokens']}, 地址记录数={stats['records_with_addresses']}"
+                f"统计信息: 总记录数={stats['total_records']}, Token记录数={stats['records_with_tokens']}, 地址记录数={stats['records_with_addresses']}, 失败请求数={stats['failed_records']}"
             )
 
             token_df = pd.DataFrame(
@@ -261,21 +255,26 @@ def index():
                     "提取的Token": [item[0] for item in tokens_and_addresses],
                     "提取的地址": [item[1] for item in tokens_and_addresses],
                     "TID": df["tid"],
+                    "成功标记": success_flags,
                 }
             )
 
+            # 修改筛选条件，包含成功标记为False的记录
             valid_token_df = token_df[
                 (token_df["提取的Token"].apply(len) > 0)
                 | (token_df["提取的地址"].apply(len) > 0)
+                | (~token_df["成功标记"])  # 添加失败记录
             ]
 
             if len(valid_token_df) == 0:
-                logger.warning("没有找到有效的Token或地址数据")
+                logger.warning("没有找到有效的Token、地址数据或失败记录")
                 return render_template_string(
-                    HTML_TEMPLATE, error="没有找到有效的Token或地址数据", stats=stats
+                    HTML_TEMPLATE,
+                    error="没有找到有效的Token、地址数据或失败记录",
+                    stats=stats,
                 )
 
-            # 生成HTML表格
+            # 更新HTML模板，添加一个新的列展示成功状态
             token_data_html = (
                 '<table class="table table-striped table-hover" border="0"><thead><tr>'
             )
@@ -291,7 +290,11 @@ def index():
 
             # 生成表格行
             for idx, (_, row) in enumerate(valid_token_df.iterrows(), 1):
-                token_data_html += "<tr>"
+                # 根据成功标记设置行样式
+                is_success = row["成功标记"]
+                row_style = "" if is_success else ' style="background-color: #fff3f3;"'
+
+                token_data_html += f"<tr{row_style}>"
                 token_data_html += f'<td class="id-column">{idx}</td>'
                 token_data_html += (
                     f'<td class="txt-column">{html.escape(str(row["推文内容"]))}</td>'
@@ -318,16 +321,28 @@ def index():
                 # 处理详细信息
                 detail_html = f'<span class="detail-data">TID: {html.escape(str(row["TID"]))}</span>'
                 detail_html += f'<span class="detail-data">时间: {html.escape(str(row["时间"]))}</span>'
+                if not is_success:
+                    detail_html += (
+                        f'<span class="detail-data badge bg-danger">失败请求</span>'
+                    )
                 token_data_html += f'<td class="detail-column">{detail_html}</td>'
 
                 token_data_html += "</tr>"
 
             token_data_html += "</tbody></table>"
 
-            logger.info(f"分析完成, 找到 {len(valid_token_df)} 条有效Token或地址信息")
+            logger.info(
+                f"分析完成, 找到 {len(valid_token_df)} 条有效Token、地址信息或失败记录"
+            )
+
+            # 在HTML模板中显示失败记录数
+            HTML_TEMPLATE_WITH_FAILED = HTML_TEMPLATE.replace(
+                "<li>包含地址的记录数: <strong>{{ stats.records_with_addresses }}</strong></li>",
+                "<li>包含地址的记录数: <strong>{{ stats.records_with_addresses }}</strong></li>\n        <li>失败请求记录数: <strong>{{ stats.failed_records }}</strong></li>",
+            )
 
             return render_template_string(
-                HTML_TEMPLATE,
+                HTML_TEMPLATE_WITH_FAILED,
                 token_data=token_data_html,
                 token_count=len(valid_token_df),
                 stats=stats,

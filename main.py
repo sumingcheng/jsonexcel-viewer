@@ -35,7 +35,7 @@ HTML_TEMPLATE = """
         html, body { height: 100%; margin: 0; overflow-x: hidden; }
         body { padding: 10px 0; }
         .container-fluid { width: 98%; padding: 0 10px; }
-        .table-responsive { margin-top: 10px; width: 100%; height: calc(100vh - 90px); overflow-y: auto; }
+        .table-responsive { margin-top: 10px; width: 100%; height: calc(100vh - 150px); overflow-y: auto; position: relative; }
         .table td, .table th { text-align: center; vertical-align: middle; }
         .id-column { width: 60px; }
         .txt-column { text-align: left; word-wrap: break-word; white-space: normal; min-width: 300px; max-width: 400px; }
@@ -46,6 +46,24 @@ HTML_TEMPLATE = """
         .detail-data { display: block; margin: 3px 0; }
         .table { border-collapse: collapse; }
         .table td, .table th { border: 1px solid #dee2e6; }
+        .view-toggle { margin-bottom: 10px; }
+        .hidden { display: none; }
+        
+        /* 固定表头样式 */
+        .sticky-header {
+            position: sticky;
+            top: 0;
+            z-index: 10;
+            background-color: #f8f9fa;
+            box-shadow: 0 2px 2px -1px rgba(0, 0, 0, 0.1);
+        }
+        
+        .table thead th {
+            position: sticky;
+            top: 0;
+            background-color: #f8f9fa;
+            z-index: 10;
+        }
     </style>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
 </head>
@@ -89,14 +107,38 @@ HTML_TEMPLATE = """
                 </div>
                 {% endif %}
                 
-                {% if token_data %}
+                {% if token_data_valid or token_data_all %}
                 <div class="alert alert-success mb-2">
                     <strong>成功！</strong> 数据已成功加载并分析，共发现 <strong>{{ token_count }}</strong> 条Token或地址信息。
                 </div>
                 
-                <div class="table-responsive">
-                    {{ token_data|safe }}
+                <div class="view-toggle btn-group" role="group">
+                    <input type="radio" class="btn-check" name="view-option" id="view-valid" autocomplete="off" checked>
+                    <label class="btn btn-outline-primary" for="view-valid">显示有效记录</label>
+                    
+                    <input type="radio" class="btn-check" name="view-option" id="view-all" autocomplete="off">
+                    <label class="btn btn-outline-primary" for="view-all">显示全部记录</label>
                 </div>
+                
+                <div class="table-responsive" id="valid-records-table">
+                    {{ token_data_valid|safe }}
+                </div>
+                
+                <div class="table-responsive hidden" id="all-records-table">
+                    {{ token_data_all|safe }}
+                </div>
+                
+                <script>
+                    document.getElementById('view-valid').addEventListener('change', function() {
+                        document.getElementById('valid-records-table').classList.remove('hidden');
+                        document.getElementById('all-records-table').classList.add('hidden');
+                    });
+                    
+                    document.getElementById('view-all').addEventListener('change', function() {
+                        document.getElementById('valid-records-table').classList.add('hidden');
+                        document.getElementById('all-records-table').classList.remove('hidden');
+                    });
+                </script>
                 {% endif %}
             </div>
         </div>
@@ -266,6 +308,9 @@ def index():
                 | (~token_df["成功标记"])  # 添加失败记录
             ]
 
+            # 获取全部记录，用于"显示全部记录"选项
+            all_token_df = token_df.copy()
+
             if len(valid_token_df) == 0:
                 logger.warning("没有找到有效的Token、地址数据或失败记录")
                 return render_template_string(
@@ -274,65 +319,14 @@ def index():
                     stats=stats,
                 )
 
-            # 更新HTML模板，添加一个新的列展示成功状态
-            token_data_html = (
-                '<table class="table table-striped table-hover" border="0"><thead><tr>'
-            )
-            for col, col_class in {
-                "序号": "id-column",
-                "推文内容": "txt-column",
-                "提取的Token": "token-column",
-                "提取的地址": "address-column",
-                "详细": "detail-column",
-            }.items():
-                token_data_html += f'<th class="{col_class}">{col}</th>'
-            token_data_html += "</tr></thead><tbody>"
+            # 生成有效记录的HTML表格
+            valid_token_data_html = generate_table_html(valid_token_df)
 
-            # 生成表格行
-            for idx, (_, row) in enumerate(valid_token_df.iterrows(), 1):
-                # 根据成功标记设置行样式
-                is_success = row["成功标记"]
-                row_style = "" if is_success else ' style="background-color: #fff3f3;"'
-
-                token_data_html += f"<tr{row_style}>"
-                token_data_html += f'<td class="id-column">{idx}</td>'
-                token_data_html += (
-                    f'<td class="txt-column">{html.escape(str(row["推文内容"]))}</td>'
-                )
-
-                # 处理Token
-                tokens = row["提取的Token"]
-                token_html = ""
-                if tokens:
-                    for token in tokens:
-                        token_html += (
-                            f'<span class="token-data">{html.escape(str(token))}</span>'
-                        )
-                token_data_html += f'<td class="token-column">{token_html}</td>'
-
-                # 处理地址
-                addresses = row["提取的地址"]
-                address_html = ""
-                if addresses:
-                    for addr in addresses:
-                        address_html += f'<span class="address-data">{html.escape(str(addr))}</span>'
-                token_data_html += f'<td class="address-column">{address_html}</td>'
-
-                # 处理详细信息
-                detail_html = f'<span class="detail-data">TID: {html.escape(str(row["TID"]))}</span>'
-                detail_html += f'<span class="detail-data">时间: {html.escape(str(row["时间"]))}</span>'
-                if not is_success:
-                    detail_html += (
-                        f'<span class="detail-data badge bg-danger">失败请求</span>'
-                    )
-                token_data_html += f'<td class="detail-column">{detail_html}</td>'
-
-                token_data_html += "</tr>"
-
-            token_data_html += "</tbody></table>"
+            # 生成全部记录的HTML表格
+            all_token_data_html = generate_table_html(all_token_df)
 
             logger.info(
-                f"分析完成, 找到 {len(valid_token_df)} 条有效Token、地址信息或失败记录"
+                f"分析完成, 找到 {len(valid_token_df)} 条有效Token、地址信息或失败记录，总共 {len(all_token_df)} 条记录"
             )
 
             # 在HTML模板中显示失败记录数
@@ -343,7 +337,8 @@ def index():
 
             return render_template_string(
                 HTML_TEMPLATE_WITH_FAILED,
-                token_data=token_data_html,
+                token_data_valid=valid_token_data_html,
+                token_data_all=all_token_data_html,
                 token_count=len(valid_token_df),
                 stats=stats,
             )
@@ -363,6 +358,72 @@ def index():
                     logger.warning(f"删除临时文件失败: {temp_file}, 错误: {str(e)}")
 
     return render_template_string(HTML_TEMPLATE)
+
+
+# 添加生成表格的辅助函数
+def generate_table_html(df):
+    """生成HTML表格"""
+    token_data_html = (
+        '<table class="table table-striped table-hover" border="0">'
+        '<thead class="sticky-header"><tr>'
+    )
+    for col, col_class in {
+        "序号": "id-column",
+        "推文": "txt-column",
+        "token": "token-column",
+        "address": "address-column",
+        "其他": "detail-column",
+    }.items():
+        token_data_html += f'<th class="{col_class}">{col}</th>'
+    token_data_html += "</tr></thead><tbody>"
+
+    # 生成表格行
+    for idx, (_, row) in enumerate(df.iterrows(), 1):
+        # 根据成功标记设置行样式
+        is_success = row["成功标记"]
+        row_style = "" if is_success else ' style="background-color: #fff3f3;"'
+
+        token_data_html += f"<tr{row_style}>"
+        token_data_html += f'<td class="id-column">{idx}</td>'
+        token_data_html += (
+            f'<td class="txt-column">{html.escape(str(row["推文内容"]))}</td>'
+        )
+
+        # 处理Token
+        tokens = row["提取的Token"]
+        token_html = ""
+        if tokens:
+            for token in tokens:
+                token_html += (
+                    f'<span class="token-data">{html.escape(str(token))}</span>'
+                )
+        token_data_html += f'<td class="token-column">{token_html}</td>'
+
+        # 处理地址
+        addresses = row["提取的地址"]
+        address_html = ""
+        if addresses:
+            for addr in addresses:
+                address_html += (
+                    f'<span class="address-data">{html.escape(str(addr))}</span>'
+                )
+        token_data_html += f'<td class="address-column">{address_html}</td>'
+
+        # 处理详细信息
+        detail_html = (
+            f'<span class="detail-data">TID: {html.escape(str(row["TID"]))}</span>'
+        )
+        detail_html += (
+            f'<span class="detail-data">时间: {html.escape(str(row["时间"]))}</span>'
+        )
+        if not is_success:
+            detail_html += f'<span class="detail-data badge bg-danger">失败请求</span>'
+        token_data_html += f'<td class="detail-column">{detail_html}</td>'
+
+        token_data_html += "</tr>"
+
+    token_data_html += "</tbody></table>"
+    return token_data_html
 
 
 if __name__ == "__main__":

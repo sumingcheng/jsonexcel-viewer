@@ -87,12 +87,20 @@ HTML_TEMPLATE = """
                     <strong>成功！</strong> 数据已成功加载并分析，共发现 <strong>{{ token_count }}</strong> 条Token或地址信息。
                 </div>
                 
-                <div class="view-toggle btn-group" role="group">
-                    <input type="radio" class="btn-check" name="view-option" id="view-valid" autocomplete="off" checked>
-                    <label class="btn btn-outline-primary" for="view-valid">显示有效记录</label>
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <div class="view-toggle btn-group" role="group">
+                        <input type="radio" class="btn-check" name="view-option" id="view-valid" autocomplete="off" checked>
+                        <label class="btn btn-outline-primary" for="view-valid">显示有效记录</label>
+                        
+                        <input type="radio" class="btn-check" name="view-option" id="view-all" autocomplete="off">
+                        <label class="btn btn-outline-primary" for="view-all">显示全部记录</label>
+                    </div>
                     
-                    <input type="radio" class="btn-check" name="view-option" id="view-all" autocomplete="off">
-                    <label class="btn btn-outline-primary" for="view-all">显示全部记录</label>
+                    {% if show_export %}
+                    <div>
+                        <a href="/export" class="btn btn-success">📁 导出Excel</a>
+                    </div>
+                    {% endif %}
                 </div>
                 
                 <div class="table-responsive" id="valid-records-table">
